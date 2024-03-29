@@ -1,0 +1,350 @@
+# MANAGE DATA #################################################################
+
+# Load necessary libraries
+# install.packages(c("eurostat", "sqldf", "ggplot2"))
+library('eurostat')
+library("sqldf")
+library("ggplot2")
+library("maps")
+library("dplyr")
+library("sf")
+library('plotly')
+library('treemapify')
+library('hrbrthemes')
+library('gganimate')
+library('gifski')
+
+
+# Eurostat data
+countries <- unique(rbind(eurostat::ea_countries[,c('code','name')], 
+                          eurostat::efta_countries[,c('code','name')], 
+                          eurostat::eu_candidate_countries[,c('code','name')],
+                          eurostat::eu_countries[,c('code','name')]))
+new_row <- c('UK', 'United Kingdom')
+countries <- rbind(countries, new_row)
+population <- get_eurostat(id = "tps00001", time_format = 'raw')
+eurostat_data <- merge(x = population, y = countries, by.x = 'geo', 
+                       by.y = 'code')
+
+# Read causes of deaths data and create dementia deaths
+# https://ec.europa.eu/eurostat/databrowser/bookmark/182f0a5c-c3a2-4c22-b3d5-ffb4d202a504?lang=en
+# or
+# https://ec.europa.eu/eurostat/databrowser/view/HLTH_CD_ARO__custom_6297343/default/table?lang=en
+death_causes <- read.csv("hlth_cd_aro__custom_6297343_linear.csv")[,c(5:7,9:11)]
+# unique(death_causes$icd10)
+query <- paste("SELECT sex,age,geo,TIME_PERIOD,OBS_VALUE FROM death_causes", 
+               "WHERE icd10 = 'F01_F03'")
+dementia_deaths <- sqldf(query)
+
+# Merge causes of death with eurostat data
+query <- paste("SELECT a.geo as code, b.name as name, a.TIME_PERIOD as year,",
+               "b.'values' as population, a.age as age, a.sex as gender,", 
+               "a.OBS_VALUE as dementia FROM dementia_deaths a LEFT JOIN", 
+               "eurostat_data b ON a.geo=b.geo AND a.TIME_PERIOD=b.time",
+               "ORDER BY 1,3,5,6")
+df <- sqldf(query)
+
+# Get the codes for which null in name was produced
+unique(df[is.na(df$name),c('code','name')])
+
+# Format data frame columns
+str(df)
+df$code <- as.factor(df$code)
+df$name <- as.factor(df$name)
+df$year <- ordered(as.factor(df$year))
+levels <- c('Y_LT25','Y25-29','Y30-44','Y45-64','Y65-74',
+            'Y75-79','Y80-84','Y85-89','Y90-94','Y_GE95')
+df$age <- factor(df$age, levels = levels, ordered = TRUE)
+levels(df$age) <- c("<25", "25-29", "30-44", "45-64", "65-74", "75-79", "80-84",
+                    "85-89", "90-94", ">=95")
+df$gender <- as.factor(df$gender)
+
+# Greece's data
+gr_data <- df[df$code=='EL',]
+
+
+# Plots #######################################################################
+
+# Plot 1: Categories of death causes by impact
+# Execute an SQL query on the death causes
+query <- paste("SELECT icd10, SUM(OBS_VALUE) as SUM FROM death_causes WHERE",
+               "icd10 IN ('A_B','C00-D48','E','F','G_H','I','J','K','L','M',",
+               "'N','O','P','Q','R','V01-Y89') GROUP BY icd10",
+               "ORDER BY 2 DESC")
+result <- sqldf(query)
+icd10_codes <- unique(result$icd10)
+icd10_label <- c('Circulatory system diseases','Neoplasms',
+               'Respiratory system diseases',
+               'Nervous system and sense organs diseases',
+               'Mental and behavioural disorders',
+               'Symptoms, signs and abnormal clinical and laboratory findings',
+               'External causes of morbidity and mortality',
+               'Diseases of the digestive system',
+               'Endocrine, nutritional and metabolic diseases',
+               'Genitourinary system diseases',
+               'Certain infectious and parasitic diseases',
+               'Musculoskeletal system and connective tissue diseases',
+               'Certain conditions originating in the perinatal period',
+               'Congenital malformations, deformations and chromosomal abnormalities',
+               'Skin and subcutaneous tissue diseases',
+               'Pregnancy, childbirth and the puerperium')
+icd10 <- data.frame(icd10=icd10_codes, label=icd10_label)
+result <- merge(x = result, y = icd10, by = 'icd10')
+result$label <- reorder(result$label, result$SUM)
+# Plot
+ggplot(result) + aes(x = label, y = SUM) + geom_col(fill = "#0C4C8A") +
+  labs(x = "OCCURENCE CATEGORY", y = "DEATHS", 
+  title = "DEATHS OF EUROPE INHABITANTS BY CATEGORY OF OCCURENCE (EXCEPT COVID-19) IN THE PERIOD 2011 - 2021",
+  caption = "Figure 1 - Mental and behavioural disorders category of occurence is the 5th cause of death accounting for approximately 1.9 million deaths") +
+  coord_flip() + theme_minimal() +
+  scale_y_continuous(breaks = seq(0, max(result$SUM), by = 1e+6)) +
+  theme(plot.title = element_text(face = "bold", hjust = 0.5), 
+        plot.caption = element_text(hjust = 0.5))
+
+# Plot 2: Dementia ranking among mental disorders diseases
+query <- paste("SELECT icd10, SUM(OBS_VALUE) as SUM FROM death_causes WHERE",
+               "icd10 IN ('F01_F03','F10','TOXICO','F_OTH')",
+               "GROUP BY icd10 ORDER BY 2 DESC LIMIT 20")
+result <- sqldf(query)
+icd10_codes <- unique(result$icd10)
+icd10_label <- c('Dementia',
+                 'Other mental and behavioural disorders',
+                 'Mental and behavioural disorders due to use of alcohol',
+                 'Drug dependence, toxicomania')
+short <- c('Dementia',
+           'Other',
+           'Alcohol dependence',
+           'Drug dependence')
+icd10 <- data.frame(icd10=icd10_codes, label=icd10_label, short=short)
+result <- merge(x = result, y = icd10, by = 'icd10')
+result$label <- reorder(result$label, result$SUM)
+# Plot
+# ggplot(result) +
+#   aes(x = label, y = SUM) +
+#   geom_col(fill = "#0C4C8A") +
+#   labs(x = "CAUSES", y = "DEATHS", 
+#        title = "DEATHS OF EUROPE INHABITANTS BY MENTAL AND BEHAVIOURAL DISORDERS IN THE PERIOD 2011 - 2021",
+#        caption = "Figure 2 - The most prominent cause of death of mental and behavioural disorders category is dementia accounting for approximately 1.8 million deaths of the 1.9 million deaths of the whole category") +
+#   theme_minimal() +
+#   theme(plot.title = element_text(face = "bold", hjust = 0.5), plot.caption = element_text(hjust = 0.5))
+
+ggplot(result, aes(area = SUM, fill = label, label = paste(short,SUM,sep="\n"))) +
+  geom_treemap() +
+  geom_treemap_text(colour = "white", place = "centre", size = 15, grow = T) + 
+  theme(legend.position="bottom") +
+  labs(title = "DEATHS OF EUROPE INHABITANTS BY MENTAL AND BEHAVIOURAL DISORDERS IN THE PERIOD 2011 - 2021",
+       caption = "Figure 2 - The most prominent cause of death of mental and behavioural disorders category is dementia accounting for approximately 1.8 million deaths of the 1.9 million deaths of the whole category") +
+  theme(plot.title = element_text(face = "bold", hjust = 0.5), plot.caption = element_text(hjust = 0.5))
+
+# Plot 3: Dementia ranking among all diseases
+query <- paste("SELECT icd10, SUM(OBS_VALUE) as SUM FROM death_causes WHERE",
+               "icd10 NOT IN ('A_B','C00-D48','C','E','F','G_H','I','J','K','L','M',",
+               "'N','O','P','Q','R','V01-Y89','I20-I25','J40-J47','ACC') GROUP BY icd10",
+               "ORDER BY 2 DESC LIMIT 10")
+result <- sqldf(query)
+icd10_codes <- unique(result$icd10)
+icd10_label <- c('Heart diseases (except ischaemic)',
+                 'Cerebrovascular diseases',
+                 'Ischaemic heart diseases (except acute myocardial infarction)',
+                 'Diseases of the circulatory system (except heart and cerebrovascular)',
+                 'Acute myocardial infarction',
+                 'Dementia',
+                 'Lower respiratory diseases (except asthma and status asthmaticus)',
+                 'Malignant neoplasm of trachea, bronchus and lung',
+                 'Pneumonia',
+                 'Diseases of the digestive system (except ulcer of stomach/duodenum/jejunum and chronic liver diseases)')
+icd10 <- data.frame(icd10=icd10_codes, label=icd10_label)
+result <- merge(x = result, y = icd10, by = 'icd10')
+result$label <- reorder(result$label, result$SUM)
+# Plot
+# ggplot(result) +
+#   aes(x = label, weight = SUM) +
+#   geom_bar(fill = "#112446") +
+#   labs(x = "CAUSE OF DEATH", 
+#        y = "DEATHS", 
+#        title = "DEATHS OF EUROPE INHABITANTS BY ALL DETAILED CAUSES FROM 2011 - 2021",
+#        caption = "Figure 3 - Dementia is the 6th highest cause of death across Europe inhabitants") +
+#   coord_flip() +
+#   theme_minimal() +
+#   theme(plot.title = element_text(face = "bold", hjust = 0.5), plot.caption = element_text(hjust = 0.5))
+
+
+# Plot
+ggplot(result, aes(x=label, y=SUM, label=SUM)) +
+  geom_segment(
+    aes(x=label, xend=label, y=0, yend=SUM), 
+    color="#0C4C8A",
+  ) +
+  geom_text(nudge_x = 0.2) + 
+  geom_point(
+    color="#0C4C8A",
+    size=4
+  ) +
+  labs(x = "CAUSE OF DEATH", 
+       y = "DEATHS", 
+       title = "DEATHS OF EUROPE INHABITANTS BY ALL DETAILED CAUSES FROM 2011 - 2021",
+       caption = "Figure 3 - Dementia is the 6th highest cause of death across Europe inhabitants") +
+  coord_flip() +
+  theme_minimal() +
+  theme(plot.title = element_text(face = "bold", hjust = 0.5), plot.caption = element_text(hjust = 0.5))
+
+# Plot 4: Dementia Deaths of Europe and Greece inhabitants by year
+query <- paste("WITH demo as (SELECT year, SUM(population) as EU_population",
+               "FROM (SELECT DISTINCT name, year, population FROM df) GROUP BY",
+               "year), deaths as (SELECT year, SUM(dementia) as EU_deaths FROM",
+               "df GROUP BY year) SELECT a.year,", 
+               "ROUND(b.EU_deaths/a.EU_population*100000,1) as d_vs_100k, 'Europe'",
+               "as entity FROM demo a, deaths b WHERE a.year=b.year UNION",
+               "SELECT year, ROUND(SUM(dementia)/population*100000,1) as",
+               "d_vs_100k, name as entity FROM gr_data GROUP BY year")
+result <- sqldf(query)
+# Plot
+ggplot(result) +
+  aes(x = year, y = d_vs_100k, colour = entity, shape = entity, group = entity) +
+  geom_point(size = 2.5) +
+  geom_smooth(span = 0.7) +
+  scale_color_brewer(palette = "Set1", direction = 1) +
+  labs(x = "YEAR", 
+       y = "DEMENTIA DEATHS PER 100K INHABITANTS", 
+       title = "DEMENTIA DEATHS PER 100,000 INHABITANTS OF EUROPE AND GREECE BY YEAR", 
+       caption = "Figure 4 - Greece has a lower rate of dementia deaths, however there exists an increasing trend over the years contrary to Europe's average which seems to have a decreasing trend from 2019 onwards and Greece seems to most probably exceed Europe's average by 2022", 
+       color = "ENTITY", shape = "ENTITY") +
+  theme_minimal() +
+  theme(plot.title = element_text(face = "bold", 
+                                  hjust = 0.5), 
+        plot.caption = element_text(hjust = 0.5))
+
+# Plot 5: Spatial data
+query <- paste("SELECT geo, name, ROUND(AVG(d_vs_100k),1) as d_vs_100k FROM",
+               "(SELECT code as geo, name, year,",
+               "SUM(dementia)/population*100000 as d_vs_100k FROM df GROUP", 
+               "BY name, year) GROUP BY name")
+result <- sqldf(query)
+SHP_0 <- get_eurostat_geospatial(resolution = 10, nuts_level = 0, year = 2016)
+SHP_34 <- result %>% inner_join(SHP_0, by = "geo") %>% st_as_sf()
+SHP_34 %>% ggplot(aes(fill = d_vs_100k)) + geom_sf() + scale_x_continuous(limits = c(-10, 45)) + 
+  scale_y_continuous(limits = c(35, 70)) + theme_void() +
+  scale_fill_distiller(palette = "BuPu", direction = 1) +
+  labs(title = "AVERAGE DEMENTIA DEATHS PER 100,000 INHABITANTS OVER THE PERIOD 2011 - 2021 BY EUROPEAN COUNTRY", 
+       caption = "Figure 5 - Europe's average dementia deaths per 100k inhabitants in a year map ", 
+       fill = "Dementia deaths/100k") +
+  theme(plot.title = element_text(face = "bold", hjust = 0.5), 
+        plot.caption = element_text(hjust = 0.5))
+
+# Plot 6: Dementia Deaths of European countries' inhabitants by year in a Tile
+query <- paste("SELECT name, year, ROUND(SUM(dementia)/population*100000,1) as d_vs_100k FROM df GROUP BY name, year")
+result <- sqldf(query)
+# Plot
+ggplot(result) +
+ aes(x = year, y = name, fill = d_vs_100k, colour = d_vs_100k, group = name) +
+ geom_tile() +
+ scale_fill_distiller(palette = "BuPu", direction = 1) +
+ scale_color_distiller(palette = "BuPu", direction = 1) +
+ labs(x = "YEAR", y = "COUNTRY", title = "DEMENTIA DEATHS PER 100,000 INHABITANTS BY EUROPEAN COUNTRY AND YEAR IN A PLOT", 
+ caption = "Figure 6 - Europe's average dementia deaths per 100k inhabitants started decreasing from 2019 (as shown in Figure 5) mainly due to the Feb 2020 BREXIT, because UK had by far the biggest ratio of dementia deaths and obviously did not send any data to Eurostat from the previous year (2019) and onwards", 
+ fill = "Dementia deaths/100k", color = "Dementia deaths/100k") +
+ theme_minimal() +
+ theme(plot.title = element_text(face = "bold", 
+ hjust = 0.5), plot.caption = element_text(hjust = 0.5))
+
+# Plot 7: Dementia Deaths of each European country's inhabitants by year in a Trellis plot
+levels(result$year) <- c("'11", "'12", "'13", "'14", "'15", "'16", "'17", "'18",
+                         "'19", "'20", "'21")
+ggplot(result) +
+ aes(x = year, y = d_vs_100k, group = name) +
+ geom_point(shape = "circle", size = 2L, 
+ colour = "#112446") + geom_line() +
+ labs(x = "YEAR", y = "DEMENTIA DEATHS PER 100,000 INHABITANTS", 
+      title = "DEMENTIA DEATHS PER 100,000 INHABITANTS BY YEAR FOR EACH EUROPEAN COUNTRY IN SEPARATE PLOTS", 
+ caption = "Figure 7 - In all Europe countries there exists a small or big increase of dementia deaths over the years as is happening with Greece") +
+ theme_minimal() +
+ theme(plot.title = element_text(face = "bold", 
+ hjust = 0.5), plot.caption = element_text(hjust = 0.5)) +
+ facet_wrap(vars(name))
+
+# Plot 8: GIF of ranking of Countries
+# query <- paste("SELECT icd10, TIME_PERIOD, RANK() OVER (PARTITION BY", 
+#                "TIME_PERIOD ORDER BY SUM(OBS_VALUE) DESC) as rank FROM", 
+#                "death_causes GROUP BY icd10, TIME_PERIOD")
+query <- paste("SELECT name as Species, year as Year, ROUND(SUM(dementia)/population*100000,1)",
+               "as Price, RANK() OVER (PARTITION BY year ORDER BY SUM(dementia)/population DESC) as rank",
+               "FROM df GROUP BY name, year")
+prices <- sqldf(query)
+query <- paste("SELECT Year, ROUND(AVG(Price),1) as mean_price",
+               "FROM prices GROUP BY year")
+avg <- sqldf(query)
+query <- paste("SELECT a.*,b.mean_price FROM prices a, 'avg' b WHERE a.Year=b.Year")
+prices <- sqldf(query)
+p.static <- ggplot(prices, aes(rank, group = Species,
+                               fill = as.factor(Species), color = as.factor(Species))) +
+  geom_tile(aes(y = Price/2,
+                height = Price,
+                width = 0.9), alpha = 0.8, color = NA) +
+  geom_text(aes(y = 0, label = paste(Species, " ")), vjust = 0.2, hjust = 1, size = ifelse(prices$Species=='Greece',8,6)) +
+  geom_text(aes(y = Price, label = Price, hjust = 0), size = ifelse(prices$Species=='Greece',8,6)) +
+  geom_hline(aes(yintercept = mean_price)) +
+  coord_flip(clip = "off", expand = FALSE) +
+  scale_y_continuous(labels = scales::comma) +
+  scale_x_reverse() +
+  guides(color = FALSE, fill = FALSE) +
+  theme(axis.line = element_blank(),
+        axis.text.x = element_blank(),
+        axis.text.y = element_blank(),
+        axis.ticks = element_blank(),
+        axis.title.x = element_blank(),
+        axis.title.y = element_blank(),
+        legend.position = "none",
+        panel.background = element_blank(),
+        panel.border = element_blank(),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.grid.major.x = element_line(color = "grey"),
+        panel.grid.minor.x = element_line(color = "grey"),
+        plot.title = element_text(size = 25),
+        plot.caption = element_text(size = 11),
+        plot.background = element_blank(),
+        plot.margin = margin(5, 5, 5, 5, "cm"))
+anim <- p.static + 
+  transition_states(Year, transition_length = 4, state_length = 3) +
+  view_follow(fixed_x = TRUE)  +
+  labs(title = "DEMENTIA DEATHS PER 100,000 INHABITANTS: {closest_state}",
+       caption = "Figure 8 - Greece is always ranked below the Europe's average") +
+  theme(plot.title = element_text(face = "bold", hjust = 0.5), plot.caption = element_text(hjust = 0.5))
+animate(anim, 500, fps = 20,  width = 1200, height = 1000, end_pause = 10, 
+        renderer = gifski_renderer("gganim.gif"))
+
+# Plot 9: Dementia Deaths of Europe Countries per year and gender
+query <- paste("SELECT geo, name, gender, ROUND(AVG(d_vs_100k),1) as d_vs_100k FROM",
+               "(SELECT code as geo, name, year, gender,",
+               "SUM(dementia)/population*100000 as d_vs_100k FROM df GROUP", 
+               "BY name, year, gender) GROUP BY name, gender")
+result <- sqldf(query)
+breaks_values <- pretty(result$d_vs_100k)
+result$name <- reorder(result$name, result$d_vs_100k)
+
+ggplot(result, aes(x = name, y = d_vs_100k, fill = gender)) +
+  geom_col(position = "dodge") + coord_flip() +
+  scale_y_continuous(breaks = breaks_values, labels = abs(breaks_values)) +
+  scale_fill_manual(values = c(F = "#E40BD5", M = "#152FE3")) +
+  labs(y = "COUNTRY", x = "DEMENTIA DEATHS PER 100,000 INHABITANTS", 
+       title = "DEMENTIA DEATHS PER 100,000 INHABITANTS BY COUNTRY AND GENDER", 
+       caption = "Figure 9 - In all Europe countries women have more deaths every year than men, but at least Greece has fewer death rates for both men and women than the average european country") +
+  theme_minimal() +
+  theme(plot.title = element_text(face = "bold", 
+                                  hjust = 0.5), plot.caption = element_text(hjust = 0.5))
+
+# Plot 10: Dementia Deaths of Greece and Europe's average per age group
+gr_data %>%
+ filter(!(age %in% c(">=95", "<25"))) %>%
+ ggplot() +
+ aes(x = year, y = dementia, colour = age, shape = gender) +
+ geom_point(size = 3L) +
+ scale_color_hue(direction = 1) +
+ theme_minimal() + 
+  labs(x = "YEAR", y = "DEMENTIA DEATHS PER 100,000 INHABITANTS", 
+                        title = "DEMENTIA DEATHS OF GREECE BY AGE AND GENDER", 
+                        caption = "Figure 10 - In Greece the segment with most deaths from dementia each year is women who belong in the 80 - 84 age group") +
+  theme_minimal() +
+  theme(plot.title = element_text(face = "bold", 
+                                  hjust = 0.5), plot.caption = element_text(hjust = 0.5))
+
