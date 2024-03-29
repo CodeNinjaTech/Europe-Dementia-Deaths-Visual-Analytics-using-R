@@ -30,7 +30,7 @@ eurostat_data <- merge(x = population, y = countries, by.x = 'geo',
 # https://ec.europa.eu/eurostat/databrowser/bookmark/182f0a5c-c3a2-4c22-b3d5-ffb4d202a504?lang=en
 # or
 # https://ec.europa.eu/eurostat/databrowser/view/HLTH_CD_ARO__custom_6297343/default/table?lang=en
-death_causes <- read.csv("hlth_cd_aro__custom_6297343_linear.csv")[,c(5:7,9:11)]
+death_causes <- read.csv("../Data/hlth_cd_aro__custom_6297343_linear.csv")[,c(5:7,9:11)]
 # unique(death_causes$icd10)
 query <- paste("SELECT sex,age,geo,TIME_PERIOD,OBS_VALUE FROM death_causes", 
                "WHERE icd10 = 'F01_F03'")
@@ -347,4 +347,3 @@ gr_data %>%
   theme_minimal() +
   theme(plot.title = element_text(face = "bold", 
                                   hjust = 0.5), plot.caption = element_text(hjust = 0.5))
-
