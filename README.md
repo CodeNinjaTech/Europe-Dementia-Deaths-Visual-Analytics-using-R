@@ -1,5 +1,7 @@
 # Dementia Deaths Analysis in Europe (Visual Analytics using R)
 
+Assignment 1 for the Analytics Practicum II Course of AUEB's MSc in Business Analytics
+
 **Objective:**
 The project aims to analyze deaths from dementia in European countries between 2011 and 2020, focusing on gender-based trends. The primary goal is to investigate whether there is an increasing trend in dementia-related deaths in Greece compared to the rest of Europe.
 
